@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bambu Lab Multi-Printer Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .header {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .printer-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+        }
+        .printer-card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-left: 4px solid #ddd;
+        }
+        .printer-card.online { border-left-color: #4CAF50; }
+        .printer-card.offline { border-left-color: #f44336; }
+        .printer-card.disabled { 
+            border-left-color: #757575; 
+            opacity: 0.7;
+            background-color: #f9f9f9;
+        }
+        .printer-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .printer-name {
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            color: white;
+            font-size: 0.8em;
+        }
+        .status-badge.online { background-color: #4CAF50; }
+        .status-badge.offline { background-color: #f44336; }
+        .status-badge.disabled { background-color: #757575; }
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #f0f0f0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            background-color: #4CAF50;
+            transition: width 0.3s ease;
+        }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+            margin: 2px;
+        }
+        .btn-primary { background-color: #2196F3; color: white; }
+        .btn-success { background-color: #4CAF50; color: white; }
+        .btn-danger { background-color: #f44336; color: white; }
+        .btn:hover { opacity: 0.9; }
+        .btn:disabled { 
+            opacity: 0.5; 
+            cursor: not-allowed; 
+        }
+        .btn:disabled:hover { 
+            opacity: 0.5; 
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.4);
+        }
+        .modal-content {
+            background-color: white;
+            margin: 15% auto;
+            padding: 20px;
+            border-radius: 8px;
+            width: 80%;
+            max-width: 500px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .form-group label.checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: normal;
+        }
+        .form-group input[type="checkbox"] {
+            margin: 0;
+            width: auto;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .error {
+            color: #f44336;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+        .success {
+            color: #4CAF50;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+        .close {
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .close:hover { color: #f44336; }
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        .discovered-printer {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            margin: 5px 0;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .discovered-printer:hover {
+            background-color: #f0f0f0;
+        }
+        .discovered-printer.selected {
+            background-color: #e3f2fd;
+            border-color: #2196F3;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Bambu Lab Multi-Printer Dashboard</h1>
+        <div>
+            <button class="btn btn-success" onclick="showAddPrinterModal()">Add Printer</button>
+            <button class="btn btn-primary" onclick="refreshAllPrinters()">Refresh All</button>
+        </div>
+    </div>
+
+    <div id="printer-container" class="printer-grid">
+        <div class="empty-state">
+            <p>Loading printers...</p>
+        </div>
+    </div>
+
+    <!-- Add Printer Modal -->
+    <div id="addPrinterModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeAddPrinterModal()">&times;</span>
+            <h2>Add New Printer</h2>
+            <form id="addPrinterForm">
+                <div class="form-group">
+                    <label for="printerName">Printer Name</label>
+                    <input type="text" id="printerName" name="name" required>
+                </div>
+                <div class="form-group">
+                    <label for="printerIp">IP Address</label>
+                    <input type="text" id="printerIp" name="ipAddress" required placeholder="192.168.1.100">
+                </div>
+                <div class="form-group">
+                    <label for="printerAccessCode">Access Code</label>
+                    <input type="text" id="printerAccessCode" name="accessCode" required placeholder="12345678">
+                </div>
+                <div class="form-group">
+                    <label for="printerSerial">Serial Number (Optional)</label>
+                    <input type="text" id="printerSerial" name="serialNumber" placeholder="00M00A000000000">
+                </div>
+                <div id="addPrinterError" class="error" style="display: none;"></div>
+                <div id="addPrinterSuccess" class="success" style="display: none;"></div>
+                
+                <!-- Discovery Section -->
+                <div style="margin: 20px 0; border-top: 1px solid #ddd; padding-top: 15px;">
+                    <button type="button" class="btn btn-primary" onclick="discoverPrinters()">🔍 Discover Printers</button>
+                    <div id="discoveryResults" style="margin-top: 10px; display: none;">
+                        <h4>Discovered Printers:</h4>
+                        <div id="discoveredPrintersList"></div>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 20px;">
+                    <button type="button" class="btn btn-primary" onclick="testConnection()">Test Connection</button>
+                    <button type="submit" class="btn btn-success">Add Printer</button>
+                    <button type="button" class="btn" onclick="closeAddPrinterModal()">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Printer Modal -->
+    <div id="editPrinterModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeEditPrinterModal()">&times;</span>
+            <h2>Edit Printer</h2>
+            <form id="editPrinterForm">
+                <input type="hidden" id="editPrinterId" name="printerId">
+                <div class="form-group">
+                    <label for="editPrinterName">Printer Name</label>
+                    <input type="text" id="editPrinterName" name="name" required>
+                </div>
+                <div class="form-group">
+                    <label for="editPrinterIp">IP Address</label>
+                    <input type="text" id="editPrinterIp" name="ipAddress" required placeholder="192.168.1.100">
+                </div>
+                <div class="form-group">
+                    <label for="editPrinterAccessCode">Access Code</label>
+                    <input type="text" id="editPrinterAccessCode" name="accessCode" required placeholder="12345678">
+                </div>
+                <div class="form-group">
+                    <label for="editPrinterSerial">Serial Number (Optional)</label>
+                    <input type="text" id="editPrinterSerial" name="serialNumber" placeholder="00M00A000000000">
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="editPrinterEnabled" name="isEnabled" checked>
+                        Printer Enabled
+                    </label>
+                </div>
+                <div id="editPrinterError" class="error" style="display: none;"></div>
+                <div id="editPrinterSuccess" class="success" style="display: none;"></div>
+                <div style="margin-top: 20px;">
+                    <button type="button" class="btn btn-primary" onclick="testEditConnection()">Test Connection</button>
+                    <button type="submit" class="btn btn-success">Update Printer</button>
+                    <button type="button" class="btn" onclick="closeEditPrinterModal()">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        let printers = [];
+
+        async function refreshAllPrinters() {
+            try {
+                const response = await fetch('/api/printers');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                printers = await response.json();
+                renderPrinters();
+            } catch (error) {
+                console.error('Error fetching printers:', error);
+                document.getElementById('printer-container').innerHTML = `
+                    <div class="empty-state">
+                        <p class="error">Error loading printers: ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        function renderPrinters() {
+            const container = document.getElementById('printer-container');
+            
+            if (printers.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <p>No printers configured. Click "Add Printer" to get started.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            // Sort printers by name (case-insensitive)
+            const sortedPrinters = printers.sort((a, b) => 
+                a.config.name.toLowerCase().localeCompare(b.config.name.toLowerCase())
+            );
+
+            container.innerHTML = sortedPrinters.map(printer => {
+                const isDisabled = !printer.config.isEnabled;
+                const statusClass = isDisabled ? 'disabled' : (printer.isConnected ? 'online' : 'offline');
+                const statusText = isDisabled ? 'Disabled' : (printer.isConnected ? 'Online' : 'Offline');
+                
+                return `
+                <div class="printer-card ${statusClass}">
+                    <div class="printer-header">
+                        <div class="printer-name">${printer.config.name}</div>
+                        <div class="status-badge ${statusClass}">
+                            ${statusText}
+                        </div>
+                    </div>
+                    
+                    <p><strong>Model:</strong> ${printer.status.model || printer.config.model || 'Unknown'}</p>
+                    <p><strong>IP:</strong> ${printer.config.ipAddress}</p>
+                    <p><strong>State:</strong> ${printer.status.state || 'Unknown'}</p>
+                    <p><strong>Current Task:</strong> ${printer.status.currentTask || 'None'}</p>
+                    
+                    <div>
+                        <p><strong>Progress: ${printer.status.progress || 0}%</strong></p>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: ${printer.status.progress || 0}%"></div>
+                        </div>
+                    </div>
+                    
+                    <p><strong>Bed:</strong> ${printer.status.bedTemperature || 0}°C | <strong>Nozzle:</strong> ${printer.status.extruderTemperature || 0}°C</p>
+                    
+                    <p><strong>Firmware:</strong> ${printer.status.firmwareVersion || printer.config.firmwareVersion || 'Unknown'}</p>
+                    
+                    ${printer.connectionError ? `
+                        <div class="error">${printer.connectionError}</div>
+                    ` : ''}
+                    
+                    <div style="margin-top: 15px;">
+                        <button class="btn btn-primary" onclick="refreshPrinter('${printer.config.id}')" ${isDisabled ? 'disabled' : ''}>Refresh</button>
+                        <button class="btn btn-primary" onclick="editPrinter('${printer.config.id}')">Edit</button>
+                        <button class="btn btn-danger" onclick="removePrinter('${printer.config.id}', '${printer.config.name}')">Remove</button>
+                    </div>
+                </div>
+                `;
+            }).join('');
+        }
+
+        async function refreshPrinter(printerId) {
+            try {
+                const response = await fetch(`/api/printers/${printerId}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const printer = await response.json();
+                const index = printers.findIndex(p => p.config.id === printerId);
+                if (index !== -1) {
+                    printers[index] = printer;
+                    renderPrinters();
+                }
+            } catch (error) {
+                console.error('Error refreshing printer:', error);
+            }
+        }
+
+        async function removePrinter(printerId, printerName) {
+            if (!confirm(`Are you sure you want to remove printer "${printerName}"?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/printers/${printerId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    printers = printers.filter(p => p.config.id !== printerId);
+                    renderPrinters();
+                } else {
+                    throw new Error('Failed to remove printer');
+                }
+            } catch (error) {
+                console.error('Error removing printer:', error);
+                alert('Failed to remove printer: ' + error.message);
+            }
+        }
+
+        function showAddPrinterModal() {
+            document.getElementById('addPrinterModal').style.display = 'block';
+        }
+
+        function closeAddPrinterModal() {
+            document.getElementById('addPrinterModal').style.display = 'none';
+            document.getElementById('addPrinterForm').reset();
+            document.getElementById('addPrinterError').style.display = 'none';
+            document.getElementById('addPrinterSuccess').style.display = 'none';
+            document.getElementById('discoveryResults').style.display = 'none';
+        }
+
+        async function discoverPrinters() {
+            const discoverButton = event.target;
+            const originalText = discoverButton.textContent;
+            
+            // Clear previous messages
+            document.getElementById('addPrinterError').style.display = 'none';
+            document.getElementById('addPrinterSuccess').style.display = 'none';
+            
+            // Show loading state
+            discoverButton.textContent = '🔍 Discovering...';
+            discoverButton.disabled = true;
+            
+            try {
+                const response = await fetch('/api/discover');
+                if (!response.ok) {
+                    throw new Error(`Discovery failed: ${response.status}`);
+                }
+                
+                const discoveredPrinters = await response.json();
+                displayDiscoveredPrinters(discoveredPrinters);
+                
+            } catch (error) {
+                console.error('Discovery error:', error);
+                document.getElementById('addPrinterError').textContent = 'Discovery failed: ' + error.message;
+                document.getElementById('addPrinterError').style.display = 'block';
+            } finally {
+                // Restore button state
+                discoverButton.textContent = originalText;
+                discoverButton.disabled = false;
+            }
+        }
+
+        function displayDiscoveredPrinters(printers) {
+            const resultsDiv = document.getElementById('discoveryResults');
+            const listDiv = document.getElementById('discoveredPrintersList');
+            
+            if (printers.length === 0) {
+                listDiv.innerHTML = '<p>No printers found on the network.</p>';
+            } else {
+                listDiv.innerHTML = printers.map((printer, index) => `
+                    <div class="discovered-printer" onclick="selectDiscoveredPrinter(${index}, '${printer.ipAddress}', '${printer.deviceName}', '${printer.model}', '${printer.serialNumber || ''}')">
+                        <strong>${printer.deviceName || printer.model || 'Unknown Printer'}</strong><br>
+                        <small>IP: ${printer.ipAddress} | Model: ${printer.model || 'Unknown'} | Method: ${printer.discoveryMethod}</small>
+                        ${printer.serialNumber ? `<br><small>Serial: ${printer.serialNumber}</small>` : ''}
+                    </div>
+                `).join('');
+            }
+            
+            resultsDiv.style.display = 'block';
+        }
+
+        function selectDiscoveredPrinter(index, ipAddress, deviceName, model, serialNumber) {
+            // Clear previous selections
+            document.querySelectorAll('.discovered-printer').forEach(el => el.classList.remove('selected'));
+            
+            // Select current item
+            event.target.classList.add('selected');
+            
+            // Fill the form with discovered data
+            document.getElementById('printerName').value = deviceName || model || 'Bambu Printer';
+            document.getElementById('printerIp').value = ipAddress;
+            document.getElementById('printerSerial').value = serialNumber || '';
+            
+            // Clear access code (user still needs to provide this)
+            document.getElementById('printerAccessCode').value = '';
+            
+            // Show success message
+            document.getElementById('addPrinterSuccess').textContent = 'Printer details filled in. Please enter the access code.';
+            document.getElementById('addPrinterSuccess').style.display = 'block';
+        }
+
+        function editPrinter(printerId) {
+            const printer = printers.find(p => p.config.id === printerId);
+            if (!printer) return;
+
+            // Populate the edit form
+            document.getElementById('editPrinterId').value = printer.config.id;
+            document.getElementById('editPrinterName').value = printer.config.name;
+            document.getElementById('editPrinterIp').value = printer.config.ipAddress;
+            document.getElementById('editPrinterAccessCode').value = printer.config.accessCode;
+            document.getElementById('editPrinterSerial').value = printer.config.serialNumber || '';
+            document.getElementById('editPrinterEnabled').checked = printer.config.isEnabled;
+
+            // Clear any previous messages
+            document.getElementById('editPrinterError').style.display = 'none';
+            document.getElementById('editPrinterSuccess').style.display = 'none';
+
+            // Show the modal
+            document.getElementById('editPrinterModal').style.display = 'block';
+        }
+
+        function closeEditPrinterModal() {
+            document.getElementById('editPrinterModal').style.display = 'none';
+            document.getElementById('editPrinterForm').reset();
+            document.getElementById('editPrinterError').style.display = 'none';
+            document.getElementById('editPrinterSuccess').style.display = 'none';
+        }
+
+        async function testConnection() {
+            const form = document.getElementById('addPrinterForm');
+            const formData = new FormData(form);
+            const data = Object.fromEntries(formData);
+            
+            // Validate required fields for testing
+            if (!data.name || !data.ipAddress || !data.accessCode) {
+                document.getElementById('addPrinterError').textContent = 'Please fill in Name, IP Address, and Access Code before testing.';
+                document.getElementById('addPrinterError').style.display = 'block';
+                document.getElementById('addPrinterSuccess').style.display = 'none';
+                return;
+            }
+
+            // Clear previous messages
+            document.getElementById('addPrinterError').style.display = 'none';
+            document.getElementById('addPrinterSuccess').style.display = 'none';
+
+            // Disable test button and show loading
+            const testButton = event.target;
+            const originalText = testButton.textContent;
+            testButton.textContent = 'Testing...';
+            testButton.disabled = true;
+
+            try {
+                const response = await fetch('/api/printers/test', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    document.getElementById('addPrinterSuccess').textContent = 'Connection test successful! ✓';
+                    document.getElementById('addPrinterSuccess').style.display = 'block';
+                } else {
+                    document.getElementById('addPrinterError').textContent = 'Connection test failed: ' + result.message;
+                    document.getElementById('addPrinterError').style.display = 'block';
+                }
+            } catch (error) {
+                document.getElementById('addPrinterError').textContent = 'Test failed: ' + error.message;
+                document.getElementById('addPrinterError').style.display = 'block';
+            } finally {
+                // Re-enable test button
+                testButton.textContent = originalText;
+                testButton.disabled = false;
+            }
+        }
+
+        document.getElementById('addPrinterForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            // Clear previous messages
+            document.getElementById('addPrinterError').style.display = 'none';
+            document.getElementById('addPrinterSuccess').style.display = 'none';
+            
+            const formData = new FormData(e.target);
+            const data = Object.fromEntries(formData);
+            
+            try {
+                const response = await fetch('/api/printers', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Failed to add printer');
+                }
+                
+                closeAddPrinterModal();
+                refreshAllPrinters();
+            } catch (error) {
+                document.getElementById('addPrinterError').textContent = error.message;
+                document.getElementById('addPrinterError').style.display = 'block';
+            }
+        });
+
+        async function testEditConnection() {
+            const form = document.getElementById('editPrinterForm');
+            const formData = new FormData(form);
+            const data = Object.fromEntries(formData);
+            
+            // Validate required fields for testing
+            if (!data.name || !data.ipAddress || !data.accessCode) {
+                document.getElementById('editPrinterError').textContent = 'Please fill in Name, IP Address, and Access Code before testing.';
+                document.getElementById('editPrinterError').style.display = 'block';
+                document.getElementById('editPrinterSuccess').style.display = 'none';
+                return;
+            }
+
+            // Clear previous messages
+            document.getElementById('editPrinterError').style.display = 'none';
+            document.getElementById('editPrinterSuccess').style.display = 'none';
+
+            // Disable test button and show loading
+            const testButton = event.target;
+            const originalText = testButton.textContent;
+            testButton.textContent = 'Testing...';
+            testButton.disabled = true;
+
+            try {
+                const response = await fetch('/api/printers/test', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        name: data.name,
+                        ipAddress: data.ipAddress,
+                        accessCode: data.accessCode,
+                        serialNumber: data.serialNumber
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    document.getElementById('editPrinterSuccess').textContent = 'Connection test successful! ✓';
+                    document.getElementById('editPrinterSuccess').style.display = 'block';
+                } else {
+                    document.getElementById('editPrinterError').textContent = 'Connection test failed: ' + result.message;
+                    document.getElementById('editPrinterError').style.display = 'block';
+                }
+            } catch (error) {
+                document.getElementById('editPrinterError').textContent = 'Test failed: ' + error.message;
+                document.getElementById('editPrinterError').style.display = 'block';
+            } finally {
+                // Re-enable test button
+                testButton.textContent = originalText;
+                testButton.disabled = false;
+            }
+        }
+
+        // Edit printer form submission
+        document.getElementById('editPrinterForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            // Clear previous messages
+            document.getElementById('editPrinterError').style.display = 'none';
+            document.getElementById('editPrinterSuccess').style.display = 'none';
+            
+            const formData = new FormData(e.target);
+            const data = Object.fromEntries(formData);
+            const printerId = data.printerId;
+            
+            // Convert checkbox to boolean
+            data.isEnabled = document.getElementById('editPrinterEnabled').checked;
+            
+            // Remove printerId from data as it's in the URL
+            delete data.printerId;
+            
+            try {
+                const response = await fetch(`/api/printers/${printerId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Failed to update printer');
+                }
+                
+                closeEditPrinterModal();
+                refreshAllPrinters();
+            } catch (error) {
+                document.getElementById('editPrinterError').textContent = error.message;
+                document.getElementById('editPrinterError').style.display = 'block';
+            }
+        });
+
+        // Auto-refresh every 10 seconds
+        setInterval(refreshAllPrinters, 10000);
+        
+        // Initial load
+        refreshAllPrinters();
+    </script>
+</body>
+</html>
