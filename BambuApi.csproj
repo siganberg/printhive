@@ -7,6 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="FluentFTP" Version="53.0.1" />
     <PackageReference Include="LiteDB" Version="5.0.21" />
     <PackageReference Include="MQTTnet" Version="5.0.1.1416" />
     <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />

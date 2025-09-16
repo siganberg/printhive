@@ -2,10 +2,8 @@ using MQTTnet;
 using System.Text.Json;
 using System.Buffers;
 using BambuApi.Models;
-using System.Net.Http;
-using System.Text;
 using System.Net;
-using System.Net.Security;
+using FluentFTP;
 
 namespace BambuApi.Services;
 
@@ -305,8 +303,8 @@ public class BambuPrinterService : IDisposable
 
     public async Task<(bool Success, string Message)> UploadFileAsync(Stream fileStream, string fileName)
     {
-        // Try both passive and active modes
-        var modes = new[] { true, false }; // passive first, then active
+        // Try only passive mode first (server recommends PASV)
+        var modes = new[] { true }; // passive only
         
         foreach (var usePassive in modes)
         {
@@ -333,65 +331,70 @@ public class BambuPrinterService : IDisposable
             }
         }
         
-        return (false, "Failed to upload file using both passive and active FTP modes");
+        return (false, "Failed to upload file using passive FTP mode");
     }
 
-    private async Task<(bool Success, string Message)> TryUploadFile(Stream fileStream, string fileName, bool usePassive)
+    private Task<(bool Success, string Message)> TryUploadFile(Stream fileStream, string fileName, bool usePassive)
     {
-        // Configure FTPS connection (use ftp:// scheme with SSL enabled)
-        var ftpUri = $"ftp://{_printerIp}:990/{fileName}";
-        var request = (FtpWebRequest)WebRequest.Create(ftpUri);
-        
-        request.Method = WebRequestMethods.Ftp.UploadFile;
-        request.Credentials = new NetworkCredential("bblp", _accessCode);
-        request.EnableSsl = true;
-        request.UsePassive = usePassive;
-        request.Timeout = 15000; // 15 second timeout
-        request.ReadWriteTimeout = 15000; // 15 second read/write timeout
-        request.KeepAlive = false; // Don't keep the connection alive
-        request.UseBinary = true; // Use binary mode for 3MF files
-        
-        // Accept all SSL certificates (printers use self-signed certificates)
-        ServicePointManager.ServerCertificateValidationCallback = 
-            (sender, certificate, chain, sslPolicyErrors) => true;
-        
-        _logger.LogDebug("Connecting to FTPS server: {URI} ({Mode} mode)", ftpUri, usePassive ? "passive" : "active");
-        
-        // Upload the file with timeout
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        try
+        return Task.Run(() =>
         {
-            _logger.LogDebug("Getting request stream...");
-            using var requestStream = await request.GetRequestStreamAsync().WaitAsync(cts.Token);
+            using var client = new FtpClient(_printerIp, "bblp", _accessCode, 990);
             
-            _logger.LogDebug("Copying file data to stream (size: {Size} bytes)...", fileStream.Length);
-            await fileStream.CopyToAsync(requestStream, cts.Token);
-            
-            _logger.LogDebug("File data copied successfully, closing stream...");
-        }
-        catch (OperationCanceledException)
-        {
-            throw new TimeoutException($"File upload timed out after 30 seconds ({(usePassive ? "passive" : "active")} mode)");
-        }
-        
-        // Get the response
-        _logger.LogDebug("Getting response...");
-        using var response = (FtpWebResponse)await request.GetResponseAsync().WaitAsync(cts.Token);
-        _logger.LogDebug("FTPS upload response: Status={Status}, Description={Description}", 
-            response.StatusCode, response.StatusDescription);
-        
-        if (response.StatusCode == FtpStatusCode.ClosingData || 
-            response.StatusCode == FtpStatusCode.FileActionOK)
-        {
-            _logger.LogInformation("Successfully uploaded file {FileName} to printer {IP} via FTPS ({Mode} mode)", 
-                fileName, _printerIp, usePassive ? "passive" : "active");
-            return (true, "File uploaded successfully to printer");
-        }
-        else
-        {
-            var errorMessage = $"FTPS upload failed: {response.StatusCode} - {response.StatusDescription}";
-            return (false, errorMessage);
-        }
+            try
+            {
+                // Configure FTPS settings to match FileZilla behavior
+                client.Config.EncryptionMode = FtpEncryptionMode.Implicit;
+                client.Config.ValidateAnyCertificate = true; // Accept self-signed certificates
+                client.Config.DataConnectionType = usePassive ? FtpDataConnectionType.PASV : FtpDataConnectionType.PORT;
+                client.Config.ConnectTimeout = 30000; // Increase timeout
+                client.Config.DataConnectionConnectTimeout = 30000;
+                client.Config.DataConnectionReadTimeout = 60000;
+                client.Config.LogToConsole = true;
+                
+                // Try to match FileZilla's behavior - some printers need this
+                client.Config.SocketKeepAlive = false;
+                client.Config.StaleDataCheck = false;
+                client.Config.DataConnectionEncryption = true; // Data connections must be encrypted
+                client.Config.SslSessionLength = 7200; // Enable SSL session reuse (2 hours)
+                // Disable SSL buffering if available in this version
+                
+                _logger.LogDebug("Connecting to FTPS server: {IP}:990 ({Mode} mode)", _printerIp, usePassive ? "passive" : "active");
+                
+                client.Connect();
+                
+                _logger.LogDebug("Connected successfully, uploading file: {FileName}", fileName);
+                
+                // Reset stream position
+                if (fileStream.CanSeek)
+                    fileStream.Seek(0, SeekOrigin.Begin);
+                
+                using var ftpStream = client.OpenWrite(fileName);
+                
+                // Copy data in smaller chunks to avoid overwhelming the printer
+                var buffer = new byte[8192]; // 8KB chunks
+                int bytesRead;
+                while ((bytesRead = fileStream.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    ftpStream.Write(buffer, 0, bytesRead);
+                    Thread.Sleep(10); // Small delay between chunks
+                }
+                
+                _logger.LogInformation("Successfully uploaded file {FileName} to printer {IP} via FTPS ({Mode} mode)", 
+                    fileName, _printerIp, usePassive ? "passive" : "active");
+                return (true, "File uploaded successfully to printer");
+            }
+            catch (Exception ex)
+            {
+                var errorMessage = $"FTPS upload error ({(usePassive ? "passive" : "active")} mode): {ex.Message}";
+                _logger.LogError(ex, errorMessage);
+                return (false, errorMessage);
+            }
+            finally
+            {
+                if (client.IsConnected)
+                    client.Disconnect();
+            }
+        });
     }
 
     public void Dispose()
