@@ -392,3 +392,7 @@ appsettings.local.json
 # Secrets and sensitive configuration
 secrets.json
 *.secrets.json
+
+# Uploaded files
+uploads/
+.DS_Store

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bambu Lab Multi-Printer Dashboard</title>
+    <title>PrintHive Dashboard</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -22,6 +22,15 @@
             justify-content: space-between;
             align-items: center;
         }
+        .logo-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .logo {
+            width: 48px;
+            height: 48px;
+        }
         .printer-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
@@ -33,6 +42,7 @@
             padding: 20px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
             border-left: 4px solid #ddd;
+            position: relative;
         }
         .printer-card.online { border-left-color: #4CAF50; }
         .printer-card.offline { border-left-color: #f44336; }
@@ -40,6 +50,28 @@
             border-left-color: #757575; 
             opacity: 0.7;
             background-color: #f9f9f9;
+        }
+        .printer-card.drag-over {
+            border: 2px dashed #2196F3;
+            background-color: #e3f2fd;
+            transform: scale(1.02);
+            transition: all 0.2s ease;
+        }
+        .upload-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(33, 150, 243, 0.1);
+            border: 2px dashed #2196F3;
+            border-radius: 8px;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            color: #2196F3;
+            font-weight: bold;
         }
         .printer-header {
             display: flex;
@@ -156,6 +188,11 @@
             text-align: center;
             padding: 40px;
             color: #666;
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 200px;
         }
         .discovered-printer {
             border: 1px solid #ddd;
@@ -176,7 +213,10 @@
 </head>
 <body>
     <div class="header">
-        <h1>Bambu Lab Multi-Printer Dashboard</h1>
+        <div class="logo-container">
+            <img src="printhive.png" alt="PrintHive Logo" class="logo">
+            <h1>PrintHive Dashboard</h1>
+        </div>
         <div>
             <button class="btn btn-success" onclick="showAddPrinterModal()">Add Printer</button>
             <button class="btn btn-primary" onclick="refreshAllPrinters()">Refresh All</button>
@@ -317,7 +357,10 @@
                 const statusText = isDisabled ? 'Disabled' : (printer.isConnected ? 'Online' : 'Offline');
                 
                 return `
-                <div class="printer-card ${statusClass}">
+                <div class="printer-card ${statusClass}" data-printer-id="${printer.config.id}" ondragover="handleDragOver(event)" ondrop="handleDrop(event)" ondragenter="handleDragEnter(event)" ondragleave="handleDragLeave(event)">
+                    <div class="upload-overlay">
+                        📁 Drop 3MF file to upload to printer
+                    </div>
                     <div class="printer-header">
                         <div class="printer-name">${printer.config.name}</div>
                         <div class="status-badge ${statusClass}">
@@ -684,8 +727,104 @@
             }
         });
 
+        // Drag and drop functionality
+        function handleDragOver(event) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'copy';
+        }
+
+        function handleDragEnter(event) {
+            event.preventDefault();
+            const card = event.currentTarget;
+            if (!card.classList.contains('disabled')) {
+                card.classList.add('drag-over');
+                const overlay = card.querySelector('.upload-overlay');
+                overlay.style.display = 'flex';
+            }
+        }
+
+        function handleDragLeave(event) {
+            event.preventDefault();
+            const card = event.currentTarget;
+            
+            // Only remove highlight if we're leaving the card entirely
+            if (!card.contains(event.relatedTarget)) {
+                card.classList.remove('drag-over');
+                const overlay = card.querySelector('.upload-overlay');
+                overlay.style.display = 'none';
+            }
+        }
+
+        async function handleDrop(event) {
+            event.preventDefault();
+            const card = event.currentTarget;
+            const printerId = card.dataset.printerId;
+            
+            card.classList.remove('drag-over');
+            const overlay = card.querySelector('.upload-overlay');
+            overlay.style.display = 'none';
+            
+            const files = Array.from(event.dataTransfer.files);
+            const validFiles = files.filter(file => file.name.toLowerCase().endsWith('.3mf'));
+            
+            if (validFiles.length === 0) {
+                alert('Please drop a 3MF file');
+                return;
+            }
+            
+            if (validFiles.length > 1) {
+                alert('Please drop only one file at a time');
+                return;
+            }
+            
+            const file = validFiles[0];
+            await uploadFile(printerId, file);
+        }
+
+        async function uploadFile(printerId, file) {
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            // Show upload progress
+            const card = document.querySelector(`[data-printer-id="${printerId}"]`);
+            const overlay = card.querySelector('.upload-overlay');
+            overlay.innerHTML = '⏳ Uploading...';
+            overlay.style.display = 'flex';
+            
+            try {
+                const response = await fetch(`/api/printers/${printerId}/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    overlay.innerHTML = '✅ Uploaded to printer!';
+                    setTimeout(() => {
+                        overlay.style.display = 'none';
+                        overlay.innerHTML = '📁 Drop 3MF file to upload to printer';
+                    }, 2000);
+                } else {
+                    overlay.innerHTML = '❌ Upload failed';
+                    setTimeout(() => {
+                        overlay.style.display = 'none';
+                        overlay.innerHTML = '📁 Drop 3MF file to upload to printer';
+                    }, 3000);
+                    console.error('Upload failed:', result.error);
+                }
+            } catch (error) {
+                overlay.innerHTML = '❌ Upload failed';
+                setTimeout(() => {
+                    overlay.style.display = 'none';
+                    overlay.innerHTML = '📁 Drop 3MF file to upload';
+                }, 3000);
+                console.error('Upload error:', error);
+            }
+        }
+
         // Auto-refresh every 10 seconds
-        setInterval(refreshAllPrinters, 10000);
+        // setInterval(refreshAllPrinters, 10000);
         
         // Initial load
         refreshAllPrinters();

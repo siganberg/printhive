@@ -1,14 +1,30 @@
 using BambuApi.Services;
 using BambuApi.Models;
+using Serilog;
+using Serilog.Sinks.SystemConsole.Themes;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Configure Serilog
+Log.Logger = new LoggerConfiguration()
+    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}", theme: AnsiConsoleTheme.Code)
+    .CreateLogger();
+
+try
+{
+    // Replace default logging with Serilog
+    builder.Host.UseSerilog();
+
 // Register services
+builder.Services.AddSingleton<PrinterDataService>();
 builder.Services.AddSingleton<PrinterManagerService>();
 builder.Services.AddScoped<PrinterDiscoveryService>();
 builder.Services.AddHttpClient();
 
 var app = builder.Build();
+
+var logger = app.Services.GetRequiredService<ILogger<Program>>();
+logger.LogInformation("Starting Bambu Lab Multi-Printer API");
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
@@ -80,11 +96,74 @@ app.MapDelete("/api/printers/{printerId}", async (string printerId, PrinterManag
     return removed ? Results.NoContent() : Results.NotFound();
 });
 
-app.MapGet("/api/discover", async (PrinterDiscoveryService discoveryService) =>
+app.MapPost("/api/printers/{printerId}/upload", async (string printerId, IFormFile file, PrinterManagerService printerManager) =>
 {
     try
     {
-        var discoveredPrinters = await discoveryService.DiscoverPrintersAsync();
+        if (file == null || file.Length == 0)
+        {
+            return Results.BadRequest(new { error = "No file provided" });
+        }
+
+        if (!file.FileName.EndsWith(".3mf", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.BadRequest(new { error = "Only 3MF files are supported" });
+        }
+
+        var printer = printerManager.GetPrinter(printerId);
+        if (printer == null)
+        {
+            return Results.NotFound($"Printer with ID {printerId} not found");
+        }
+
+        if (!printer.IsEnabled)
+        {
+            return Results.BadRequest(new { error = "Printer is disabled" });
+        }
+
+        // Get or create printer service for this printer
+        var printerService = printerManager.GetOrCreatePrinterService(printerId);
+        
+        // Upload file directly to the printer
+        using var fileStream = file.OpenReadStream();
+        var (success, message) = await printerService.UploadFileAsync(fileStream, file.FileName);
+
+        if (success)
+        {
+            Log.Information("Successfully uploaded 3MF file {FileName} ({Size} bytes) to printer {PrinterId}", 
+                file.FileName, file.Length, printerId);
+
+            return Results.Ok(new { 
+                message = "File uploaded successfully to printer", 
+                fileName = file.FileName,
+                size = file.Length,
+                printer = printer.Name
+            });
+        }
+        else
+        {
+            Log.Warning("Failed to upload 3MF file {FileName} to printer {PrinterId}: {Error}", 
+                file.FileName, printerId, message);
+                
+            return Results.BadRequest(new { error = message });
+        }
+    }
+    catch (Exception ex)
+    {
+        Log.Error(ex, "Failed to upload file for printer {PrinterId}", printerId);
+        return Results.Problem($"Upload failed: {ex.Message}");
+    }
+}).DisableAntiforgery();
+
+app.MapGet("/api/discover", async (PrinterDiscoveryService discoveryService, PrinterManagerService printerManager) =>
+{
+    try
+    {
+        // Get existing printer IPs to filter them out
+        var existingPrinters = printerManager.GetAllPrinters();
+        var existingIps = existingPrinters.Select(p => p.IpAddress);
+        
+        var discoveredPrinters = await discoveryService.DiscoverPrintersAsync(existingIps);
         return Results.Ok(discoveredPrinters);
     }
     catch (Exception ex)
@@ -101,3 +180,12 @@ app.MapGet("/printer/status", async (PrinterManagerService printerManager) =>
 });
 
 app.Run();
+}
+catch (Exception ex)
+{
+    Log.Fatal(ex, "Application terminated unexpectedly");
+}
+finally
+{
+    Log.CloseAndFlush();
+}

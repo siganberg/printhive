@@ -1,0 +1,19 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <!-- Hive/Beehive shape -->
+  <g transform="translate(100,100)">
+    <!-- Main hive body -->
+    <ellipse cx="0" cy="-20" rx="60" ry="15" fill="#FFA726" stroke="#37474F" stroke-width="4"/>
+    <ellipse cx="0" cy="-5" rx="65" ry="15" fill="#FFB74D" stroke="#37474F" stroke-width="4"/>
+    <ellipse cx="0" cy="10" rx="70" ry="15" fill="#FFC266" stroke="#37474F" stroke-width="4"/>
+    <ellipse cx="0" cy="25" rx="65" ry="15" fill="#FFD180" stroke="#37474F" stroke-width="4"/>
+    <ellipse cx="0" cy="40" rx="60" ry="15" fill="#FFE0B2" stroke="#37474F" stroke-width="4"/>
+    
+    <!-- 3D printer nozzle -->
+    <rect x="-12" y="-10" width="24" height="18" fill="#FF5722" stroke="#37474F" stroke-width="3" rx="2"/>
+    <rect x="-8" y="8" width="16" height="12" fill="#FF7043" stroke="#37474F" stroke-width="3" rx="2"/>
+    
+    <!-- Printing droplet -->
+    <polygon points="0,20 -4,25 4,25" fill="#FF6D00"/>
+    <circle cx="0" cy="55" r="3" fill="#607D8B"/>
+  </g>
+</svg>

@@ -1,7 +1,10 @@
+using LiteDB;
+
 namespace BambuApi.Models;
 
 public class PrinterConfig
 {
+    [BsonId]
     public string Id { get; set; } = Guid.NewGuid().ToString();
     public string Name { get; set; } = string.Empty;
     public string IpAddress { get; set; } = string.Empty;

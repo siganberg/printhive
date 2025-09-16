@@ -1,6 +1,5 @@
 using BambuApi.Models;
 using System.Collections.Concurrent;
-using System.Text.Json;
 
 namespace BambuApi.Services;
 
@@ -10,15 +9,15 @@ public class PrinterManagerService : IDisposable
     private readonly ConcurrentDictionary<string, PrinterConfig> _printerConfigs = new();
     private readonly ILogger<PrinterManagerService> _logger;
     private readonly IServiceProvider _serviceProvider;
-    private readonly string _configFilePath;
+    private readonly PrinterDataService _dataService;
     private bool _disposed = false;
 
-    public PrinterManagerService(ILogger<PrinterManagerService> logger, IServiceProvider serviceProvider)
+    public PrinterManagerService(ILogger<PrinterManagerService> logger, IServiceProvider serviceProvider, PrinterDataService dataService)
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
-        _configFilePath = Path.Combine(Directory.GetCurrentDirectory(), "printers.json");
-        LoadPrintersFromFile();
+        _dataService = dataService;
+        LoadPrintersFromDatabase();
     }
 
     public async Task<string> AddPrinterAsync(AddPrinterRequest request, bool testConnection = false)
@@ -37,8 +36,9 @@ public class PrinterManagerService : IDisposable
             await TestPrinterConnectionAsync(config.IpAddress, config.AccessCode);
         }
 
+        var savedId = _dataService.AddPrinter(config);
+        config.Id = savedId;
         _printerConfigs[config.Id] = config;
-        await SavePrintersToFile();
         
         _logger.LogInformation("Added printer {Name} ({IpAddress})", config.Name, config.IpAddress);
         return config.Id;
@@ -64,11 +64,11 @@ public class PrinterManagerService : IDisposable
         }
     }
 
-    public async Task<bool> UpdatePrinterAsync(string printerId, EditPrinterRequest request)
+    public Task<bool> UpdatePrinterAsync(string printerId, EditPrinterRequest request)
     {
         if (!_printerConfigs.TryGetValue(printerId, out var existingConfig))
         {
-            return false;
+            return Task.FromResult(false);
         }
 
         // If IP or access code changed, dispose the old service to force reconnection
@@ -88,13 +88,13 @@ public class PrinterManagerService : IDisposable
         existingConfig.SerialNumber = request.SerialNumber;
         existingConfig.IsEnabled = request.IsEnabled;
 
-        await SavePrintersToFile();
+        _dataService.UpdatePrinter(existingConfig);
         
         _logger.LogInformation("Updated printer {Name} ({PrinterId})", existingConfig.Name, printerId);
-        return true;
+        return Task.FromResult(true);
     }
 
-    public async Task<bool> RemovePrinterAsync(string printerId)
+    public Task<bool> RemovePrinterAsync(string printerId)
     {
         if (_printerServices.TryRemove(printerId, out var service))
         {
@@ -104,11 +104,11 @@ public class PrinterManagerService : IDisposable
         var removed = _printerConfigs.TryRemove(printerId, out var config);
         if (removed)
         {
-            await SavePrintersToFile();
+            _dataService.RemovePrinter(printerId);
             _logger.LogInformation("Removed printer {Name}", config?.Name);
         }
 
-        return removed;
+        return Task.FromResult(removed);
     }
 
     public IEnumerable<PrinterConfig> GetAllPrinters()
@@ -149,13 +149,13 @@ public class PrinterManagerService : IDisposable
             if (!string.IsNullOrEmpty(result.Status.Model) && result.Config.Model != result.Status.Model)
             {
                 result.Config.Model = result.Status.Model;
-                await SavePrintersToFile();
+                _dataService.UpdatePrinter(result.Config);
             }
             
             if (!string.IsNullOrEmpty(result.Status.FirmwareVersion) && result.Config.FirmwareVersion != result.Status.FirmwareVersion)
             {
                 result.Config.FirmwareVersion = result.Status.FirmwareVersion;
-                await SavePrintersToFile();
+                _dataService.UpdatePrinter(result.Config);
             }
         }
         catch (Exception ex)
@@ -174,7 +174,7 @@ public class PrinterManagerService : IDisposable
         return (await Task.WhenAll(tasks)).ToList();
     }
 
-    private BambuPrinterService GetOrCreatePrinterService(string printerId)
+    public BambuPrinterService GetOrCreatePrinterService(string printerId)
     {
         return _printerServices.GetOrAdd(printerId, id =>
         {
@@ -184,42 +184,22 @@ public class PrinterManagerService : IDisposable
         });
     }
 
-    private async Task SavePrintersToFile()
+    private void LoadPrintersFromDatabase()
     {
         try
         {
-            var json = JsonSerializer.Serialize(_printerConfigs.Values, new JsonSerializerOptions 
-            { 
-                WriteIndented = true 
-            });
-            await File.WriteAllTextAsync(_configFilePath, json);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to save printers to file");
-        }
-    }
-
-    private void LoadPrintersFromFile()
-    {
-        try
-        {
-            if (File.Exists(_configFilePath))
+            var configs = _dataService.GetAllPrinters();
+            
+            foreach (var config in configs)
             {
-                var json = File.ReadAllText(_configFilePath);
-                var configs = JsonSerializer.Deserialize<List<PrinterConfig>>(json) ?? new List<PrinterConfig>();
-                
-                foreach (var config in configs)
-                {
-                    _printerConfigs[config.Id] = config;
-                }
-                
-                _logger.LogInformation("Loaded {Count} printers from file", configs.Count);
+                _printerConfigs[config.Id] = config;
             }
+            
+            _logger.LogInformation("Loaded {Count} printers from database", configs.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to load printers from file");
+            _logger.LogError(ex, "Failed to load printers from database");
         }
     }
 
@@ -232,6 +212,7 @@ public class PrinterManagerService : IDisposable
                 service.Dispose();
             }
             _printerServices.Clear();
+            _dataService?.Dispose();
             _disposed = true;
         }
     }

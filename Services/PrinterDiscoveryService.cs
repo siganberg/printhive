@@ -56,6 +56,22 @@ public class PrinterDiscoveryService
         }
     }
 
+    public async Task<List<DiscoveredPrinter>> DiscoverPrintersAsync(IEnumerable<string> existingPrinterIps)
+    {
+        var discoveredPrinters = await DiscoverPrintersAsync();
+        var existingIps = existingPrinterIps.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        
+        // Filter out printers that already exist
+        var newPrinters = discoveredPrinters
+            .Where(p => !existingIps.Contains(p.IpAddress))
+            .ToList();
+
+        _logger.LogInformation("Found {NewCount} new printers (filtered out {ExistingCount} existing)", 
+            newPrinters.Count, discoveredPrinters.Count - newPrinters.Count);
+        
+        return newPrinters;
+    }
+
     private async Task<List<DiscoveredPrinter>> DiscoverViaSsdpAsync()
     {
         var discoveredPrinters = new List<DiscoveredPrinter>();
@@ -64,20 +80,8 @@ public class PrinterDiscoveryService
         {
             _logger.LogDebug("Starting SSDP discovery...");
 
-            var ssdpEndPoint = new IPEndPoint(IPAddress.Parse("239.255.255.250"), 1990);
-            var ssdpEndPoint2 = new IPEndPoint(IPAddress.Parse("239.255.255.250"), 2021);
-
-            using var udpClient = new UdpClient();
-            udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveTimeout, 5000);
-
-            // Listen for SSDP responses on both ports
-            var tasks = new List<Task>
-            {
-                ListenForSsdpResponses(udpClient, ssdpEndPoint, discoveredPrinters),
-                ListenForSsdpResponses(udpClient, ssdpEndPoint2, discoveredPrinters)
-            };
-
-            await Task.WhenAny(tasks.Concat(new[] { Task.Delay(5000) }));
+            // Listen for multicast SSDP messages
+            await ListenForSsdpMulticast(discoveredPrinters);
         }
         catch (Exception ex)
         {
@@ -87,20 +91,39 @@ public class PrinterDiscoveryService
         return discoveredPrinters;
     }
 
-    private async Task ListenForSsdpResponses(UdpClient udpClient, IPEndPoint endPoint, List<DiscoveredPrinter> discoveredPrinters)
+    private async Task ListenForSsdpMulticast(List<DiscoveredPrinter> discoveredPrinters)
     {
         try
         {
+            var multicastAddress = IPAddress.Parse("239.255.255.250");
+            var localEndPoint = new IPEndPoint(IPAddress.Any, 0); // Use any available port
+            
+            using var udpClient = new UdpClient();
+            udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            udpClient.Client.Bind(localEndPoint);
+            
+            // Join multicast group
+            udpClient.JoinMulticastGroup(multicastAddress);
+            udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveTimeout, 1000);
+
+            _logger.LogDebug("Listening for SSDP multicast messages...");
+            
             var timeout = DateTime.UtcNow.AddSeconds(5);
             
             while (DateTime.UtcNow < timeout)
             {
                 try
                 {
-                    var result = await udpClient.ReceiveAsync();
+                    using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+                    var result = await udpClient.ReceiveAsync().WaitAsync(cts.Token);
                     var message = Encoding.UTF8.GetString(result.Buffer);
                     
-                    if (message.Contains("bambulab") || message.Contains("3dprinter"))
+                    _logger.LogDebug("Received SSDP message from {IP}: {Message}", 
+                        result.RemoteEndPoint.Address, message.Substring(0, Math.Min(100, message.Length)));
+                    
+                    if (message.Contains("bambulab", StringComparison.OrdinalIgnoreCase) || 
+                        message.Contains("3dprinter", StringComparison.OrdinalIgnoreCase) ||
+                        message.Contains("urn:bambulab-com:device", StringComparison.OrdinalIgnoreCase))
                     {
                         var printer = ParseSsdpMessage(message, result.RemoteEndPoint.Address.ToString());
                         if (printer != null)
@@ -110,18 +133,36 @@ public class PrinterDiscoveryService
                         }
                     }
                 }
-                catch (SocketException)
+                catch (OperationCanceledException)
                 {
-                    // Timeout or no more messages
+                    // Timeout is expected, continue listening
+                    continue;
+                }
+                catch (SocketException ex) when (ex.SocketErrorCode == SocketError.TimedOut)
+                {
+                    // Timeout is expected, continue listening
+                    continue;
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Client was disposed, exit
+                    break;
+                }
+                catch (SocketException ex)
+                {
+                    _logger.LogDebug("Socket error during SSDP listen: {Error}", ex.Message);
                     break;
                 }
             }
+            
+            udpClient.DropMulticastGroup(multicastAddress);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error listening for SSDP responses");
+            _logger.LogWarning(ex, "Error listening for SSDP multicast");
         }
     }
+
 
     private DiscoveredPrinter? ParseSsdpMessage(string message, string ipAddress)
     {
